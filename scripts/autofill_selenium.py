@@ -420,6 +420,41 @@ def find_tambah_button(driver):
     return None
 
 
+def get_tambah_url(driver) -> str:
+    """Ambil URL form Tambah dari onclick tombol Tambah.
+
+    Tombol Tambah di e-MASTER berbentuk:
+    <input type="button" value="Tambah"
+           onclick="window.location.href='?module=aktifitas_bulan&act=tambahaktifitas&bulan=04&id_breakdown=...'" />
+
+    Fungsi ini extract URL dari onclick agar bisa navigasi langsung
+    tanpa perlu kembali ke halaman realisasi setiap kali.
+    """
+    import re
+    btn = find_tambah_button(driver)
+    if not btn:
+        return ""
+
+    # Cek onclick attribute
+    onclick = btn.get_attribute("onclick") or ""
+    if onclick:
+        match = re.search(r"(?:window\.location\.href\s*=\s*['\"])([^'\"]+)", onclick)
+        if match:
+            url = match.group(1)
+            if url.startswith("?"):
+                url = BASE_URL + "/essmedia.php" + url
+            elif not url.startswith("http"):
+                url = BASE_URL + "/" + url
+            return url
+
+    # Cek href (untuk <a> elements)
+    href = btn.get_attribute("href") or ""
+    if href and href != "#" and "tambah" in href.lower():
+        return href
+
+    return ""
+
+
 def find_simpan_button(driver):
     """Cari tombol Simpan/Save."""
     for el in driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button'], input[type='submit']"):
@@ -592,40 +627,53 @@ def handle_detail_aktivitas_popup(driver, keyword: str, dry_run: bool = False) -
     return False
 
 
-def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
+def fill_single_entry(driver, entry: dict, dry_run: bool = False,
+                      tambah_url: str = "") -> bool:
     """Isi satu entry aktivitas.
 
     Alur:
-      1. Di halaman realisasi, klik Tambah → navigasi ke halaman form
+      1. Navigasi ke halaman form via tambah_url (atau klik tombol Tambah)
       2. Isi field pada form "Tambah Aktivitas":
          - Tanggal Aktivitas (dari Excel)
          - Detail Aktivitas (via popup Kamus → cari "Manajemen Asuhan Keperawatan")
          - Satuan & WPT (otomatis dari Kamus, tidak perlu diisi)
          - Volume (dari Excel)
          - Objek Kerja / Topik (dari Excel)
-      3. Klik Save → kembali ke halaman realisasi
+      3. Klik Save
     """
     log.info(f"  Mengisi: tgl={entry.get('tanggal')}, objek={entry.get('objek_kerja', '')[:40]}...")
 
     dismiss_alert(driver)
 
-    # Klik Tambah — navigasi ke halaman form
-    tambah = find_tambah_button(driver)
-    if tambah:
-        if not dry_run:
-            tambah.click()
-        log.info("  Klik Tambah")
+    # Navigasi ke halaman form Tambah Aktivitas
+    if tambah_url and not dry_run:
+        log.info(f"  Navigasi langsung ke form Tambah")
+        safe_get(driver, tambah_url)
         time.sleep(DELAY_LONG)
     else:
-        log.warning("  Tombol Tambah tidak ditemukan")
-        return False
+        tambah = find_tambah_button(driver)
+        if tambah:
+            if not dry_run:
+                tambah.click()
+            log.info("  Klik Tambah")
+            time.sleep(DELAY_LONG)
+        else:
+            log.warning("  Tombol Tambah tidak ditemukan")
+            return False
 
     filled = 0
 
-    # 1. Isi Tanggal Aktivitas
+    # 1. Isi Tanggal Aktivitas — name="tgl_kegiatan", id="datepicker"
     tanggal = entry.get("tanggal", "")
     if tanggal:
-        el = find_by_labels(driver, ["tanggal aktivitas", "tanggal"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "tgl_kegiatan")
+        except Exception:
+            try:
+                el = driver.find_element(By.ID, "datepicker")
+            except Exception:
+                el = find_by_labels(driver, ["tanggal aktivitas", "tanggal"])
         if el:
             if not dry_run:
                 if safe_set_value(driver, el, str(tanggal)):
@@ -636,26 +684,41 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
                 log.info(f"    [DRY-RUN] tanggal aktivitas: '{tanggal}'")
 
     # 2. Detail Aktivitas — via popup Kamus Aktifitas Harian
-    # Kata kunci diambil dari entry.kamus_keyword (di-set oleh converter)
+    #    Field: name="rk", id="siteh4nk" (readonly, diisi via popup)
+    #    Popup: open_child('../popup_skp/popup_aktifitas.php',...)
     kamus_keyword = entry.get("kamus_keyword") or entry.get("detail_aktivitas", "")
     log.info(f"    Detail Aktivitas keyword: '{kamus_keyword}'")
     if handle_detail_aktivitas_popup(driver, kamus_keyword, dry_run):
         filled += 1
     else:
-        # Fallback: coba isi langsung
+        # Fallback: coba isi langsung via JavaScript (field readonly)
         if kamus_keyword:
-            el = find_by_labels(driver, ["detail aktivitas", "detail"])
-            if el:
-                safe_set_value(driver, el, str(kamus_keyword))
+            try:
+                el = driver.find_element(By.NAME, "rk")
+                if not el:
+                    el = driver.find_element(By.ID, "siteh4nk")
+                driver.execute_script(
+                    "arguments[0].removeAttribute('readonly'); arguments[0].value = arguments[1];",
+                    el, str(kamus_keyword))
                 filled += 1
+                log.info(f"    Detail Aktivitas (fallback JS): '{kamus_keyword}'")
+            except Exception:
+                el = find_by_labels(driver, ["detail aktivitas", "detail"])
+                if el:
+                    safe_set_value(driver, el, str(kamus_keyword))
+                    filled += 1
 
     # 3. Satuan & WPT — otomatis terisi dari Kamus, SKIP
     log.info("    satuan & wpt: otomatis dari Kamus")
 
-    # 4. Isi Volume
+    # 4. Isi Volume — name="volume"
     volume = entry.get("volume", "")
     if volume:
-        el = find_by_labels(driver, ["volume"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "volume")
+        except Exception:
+            el = find_by_labels(driver, ["volume"])
         if el:
             if not dry_run:
                 if safe_set_value(driver, el, str(volume)):
@@ -665,10 +728,14 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
                 filled += 1
                 log.info(f"    [DRY-RUN] volume: '{volume}'")
 
-    # 5. Isi Objek Kerja / Topik
+    # 5. Isi Objek Kerja / Topik — name="objek_kerja"
     objek = entry.get("objek_kerja", "")
     if objek:
-        el = find_by_labels(driver, ["objek kerja", "topik"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "objek_kerja")
+        except Exception:
+            el = find_by_labels(driver, ["objek kerja", "topik"])
         if el:
             if not dry_run:
                 if safe_set_value(driver, el, str(objek)):
@@ -678,13 +745,21 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
                 filled += 1
                 log.info(f"    [DRY-RUN] objek kerja: '{str(objek)[:60]}'")
 
-    # Klik Save — kembali ke halaman realisasi
+    # Klik Save — ada confirm() dialog yang harus di-accept
     if filled > 0 and not dry_run:
         time.sleep(DELAY_SHORT)
         simpan = find_simpan_button(driver)
         if simpan:
             simpan.click()
             log.info("  Klik Save")
+            # Accept confirm dialog: "Apakah Anda benar-benar mau menyimpan data?"
+            time.sleep(0.5)
+            try:
+                alert = driver.switch_to.alert
+                alert.accept()
+                log.info("  Accept confirm dialog")
+            except Exception:
+                pass
             time.sleep(DELAY_LONG)
         else:
             log.warning("  Tombol Save tidak ditemukan!")
@@ -733,22 +808,21 @@ def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False
 
     log.info(f"Berhasil buka halaman realisasi: {kegiatan[:50]}")
 
+    # Ambil URL form Tambah dari tombol (agar bisa navigasi langsung per entry)
+    tambah_url = get_tambah_url(driver)
+    if tambah_url:
+        log.info(f"Tambah URL: {tambah_url[:80]}...")
+    else:
+        log.warning("Tidak bisa extract Tambah URL, akan pakai klik tombol")
+
     # Isi setiap entry
     success_count = 0
     fail_count = 0
     for i, entry in enumerate(entries):
         log.info(f"\n--- Entry {i+1}/{len(entries)} ---")
 
-        # Cek apakah masih di halaman realisasi, jika tidak → navigasi ulang
-        if i > 0 and not _is_on_realisasi_page(driver):
-            log.info("  Halaman realisasi hilang, navigasi ulang...")
-            if not _navigate_to_realisasi(driver, bulan, kegiatan, dry_run):
-                log.error("  Gagal kembali ke halaman realisasi!")
-                fail_count += 1
-                continue
-
         try:
-            ok = fill_single_entry(driver, entry, dry_run)
+            ok = fill_single_entry(driver, entry, dry_run, tambah_url=tambah_url)
             if ok:
                 success_count += 1
             else:

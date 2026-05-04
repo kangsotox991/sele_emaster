@@ -561,6 +561,29 @@ def find_tambah_button(driver):
     return None
 
 
+def get_tambah_url(driver):
+    """Ambil URL form Tambah dari onclick tombol Tambah."""
+    import re
+    from selenium.webdriver.common.by import By
+    btn = find_tambah_button(driver)
+    if not btn:
+        return ""
+    onclick = btn.get_attribute("onclick") or ""
+    if onclick:
+        match = re.search(r"(?:window\.location\.href\s*=\s*['\"])([^'\"]+)", onclick)
+        if match:
+            url = match.group(1)
+            if url.startswith("?"):
+                url = BASE_URL + "/essmedia.php" + url
+            elif not url.startswith("http"):
+                url = BASE_URL + "/" + url
+            return url
+    href = btn.get_attribute("href") or ""
+    if href and href != "#" and "tambah" in href.lower():
+        return href
+    return ""
+
+
 def find_simpan_button(driver):
     from selenium.webdriver.common.by import By
     for el in driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button'], input[type='submit']"):
@@ -714,7 +737,7 @@ def handle_kamus_popup(driver, keyword, log_fn=None):
     return False
 
 
-def fill_single_entry(driver, entry, log_fn=None):
+def fill_single_entry(driver, entry, log_fn=None, tambah_url=""):
     from selenium.webdriver.common.by import By
 
     def _log(msg):
@@ -723,26 +746,37 @@ def fill_single_entry(driver, entry, log_fn=None):
 
     dismiss_alert(driver)
 
-    # 0. Klik Tambah
-    tambah = find_tambah_button(driver)
-    if tambah:
-        tambah.click()
-        _log("    [Step 1] Klik 'Tambah'")
+    # 0. Navigasi ke form Tambah Aktivitas
+    if tambah_url:
+        _log("    [Step 1] Navigasi langsung ke form Tambah")
+        safe_get(driver, tambah_url)
         time.sleep(DELAY_LONG)
     else:
-        _log("    [Step 1] Tombol 'Tambah' TIDAK DITEMUKAN!")
-        # Log available buttons for debug
-        buttons = driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button']")
-        btn_texts = [f"'{(b.text or b.get_attribute('value') or '')[:30]}'" for b in buttons[:10]]
-        _log(f"    [Debug] Tombol yang ada: {', '.join(btn_texts)}")
-        return False
+        tambah = find_tambah_button(driver)
+        if tambah:
+            tambah.click()
+            _log("    [Step 1] Klik 'Tambah'")
+            time.sleep(DELAY_LONG)
+        else:
+            _log("    [Step 1] Tombol 'Tambah' TIDAK DITEMUKAN!")
+            buttons = driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button']")
+            btn_texts = [f"'{(b.text or b.get_attribute('value') or '')[:30]}'" for b in buttons[:10]]
+            _log(f"    [Debug] Tombol yang ada: {', '.join(btn_texts)}")
+            return False
 
     filled = 0
 
-    # 1. Tanggal
+    # 1. Tanggal — name="tgl_kegiatan", id="datepicker"
     tanggal = entry.get("tanggal", "")
     if tanggal:
-        el = find_by_labels(driver, ["tanggal aktivitas", "tanggal"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "tgl_kegiatan")
+        except Exception:
+            try:
+                el = driver.find_element(By.ID, "datepicker")
+            except Exception:
+                el = find_by_labels(driver, ["tanggal aktivitas", "tanggal"])
         if el:
             if safe_set_value(driver, el, str(tanggal)):
                 filled += 1
@@ -751,15 +785,9 @@ def fill_single_entry(driver, entry, log_fn=None):
                 _log(f"    [Step 2] Tanggal: GAGAL set value")
         else:
             _log(f"    [Step 2] Field 'Tanggal Aktivitas' TIDAK DITEMUKAN")
-            # Try fallback: cari semua input text
-            inputs = driver.find_elements(By.CSS_SELECTOR, "input[type='text']")
-            _log(f"    [Debug] Input text di halaman: {len(inputs)}")
-            for inp in inputs[:5]:
-                name = inp.get_attribute("name") or ""
-                id_attr = inp.get_attribute("id") or ""
-                _log(f"    [Debug]   name='{name}', id='{id_attr}'")
 
     # 2. Detail Aktivitas via Kamus popup
+    #    Field: name="rk", id="siteh4nk" (readonly, diisi via popup)
     kamus_keyword = entry.get("kamus_keyword") or entry.get("detail_aktivitas", "")
     if kamus_keyword:
         _log(f"    [Step 3] Kamus popup: '{kamus_keyword}'")
@@ -768,12 +796,25 @@ def fill_single_entry(driver, entry, log_fn=None):
             _log(f"    [Step 3] Kamus: OK")
             time.sleep(DELAY_SHORT)
         else:
-            _log(f"    [Step 3] Kamus: GAGAL")
+            # Fallback: isi langsung via JavaScript (field readonly)
+            try:
+                el = driver.find_element(By.NAME, "rk")
+                driver.execute_script(
+                    "arguments[0].removeAttribute('readonly'); arguments[0].value = arguments[1];",
+                    el, str(kamus_keyword))
+                filled += 1
+                _log(f"    [Step 3] Kamus (fallback JS): OK")
+            except Exception:
+                _log(f"    [Step 3] Kamus: GAGAL")
 
-    # 3. Volume
+    # 3. Volume — name="volume"
     volume = entry.get("volume", "")
     if volume:
-        el = find_by_labels(driver, ["volume"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "volume")
+        except Exception:
+            el = find_by_labels(driver, ["volume"])
         if el:
             if safe_set_value(driver, el, str(volume)):
                 filled += 1
@@ -783,10 +824,14 @@ def fill_single_entry(driver, entry, log_fn=None):
         else:
             _log(f"    [Step 4] Field 'Volume' TIDAK DITEMUKAN")
 
-    # 4. Objek Kerja
+    # 4. Objek Kerja — name="objek_kerja"
     objek = entry.get("objek_kerja", "")
     if objek:
-        el = find_by_labels(driver, ["objek kerja", "topik"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "objek_kerja")
+        except Exception:
+            el = find_by_labels(driver, ["objek kerja", "topik"])
         if el:
             if safe_set_value(driver, el, str(objek)):
                 filled += 1
@@ -796,13 +841,21 @@ def fill_single_entry(driver, entry, log_fn=None):
         else:
             _log(f"    [Step 5] Field 'Objek Kerja' TIDAK DITEMUKAN")
 
-    # Klik Save
+    # Klik Save — ada confirm() dialog yang harus di-accept
     if filled > 0:
         time.sleep(DELAY_SHORT)
         simpan = find_simpan_button(driver)
         if simpan:
             simpan.click()
-            _log(f"    [Step 6] Klik Save: OK ({filled} field terisi)")
+            _log(f"    [Step 6] Klik Save ({filled} field terisi)")
+            # Accept confirm dialog: "Apakah Anda benar-benar mau menyimpan data?"
+            time.sleep(0.5)
+            try:
+                alert = driver.switch_to.alert
+                alert.accept()
+                _log(f"    [Step 6] Accept confirm dialog: OK")
+            except Exception:
+                pass
             time.sleep(DELAY_LONG)
         else:
             _log(f"    [Step 6] Tombol 'Save/Simpan' TIDAK DITEMUKAN!")
@@ -1251,6 +1304,13 @@ class EMasterGUI:
                     done += len(entries)
                     continue
 
+                # Ambil URL form Tambah dari tombol
+                tambah_url = get_tambah_url(self.driver)
+                if tambah_url:
+                    self._log(f"Tambah URL: {tambah_url[:60]}...")
+                else:
+                    self._log("Tidak bisa extract Tambah URL, akan pakai klik tombol")
+
                 # Isi entries
                 for i, entry in enumerate(entries):
                     if not self.running:
@@ -1260,21 +1320,6 @@ class EMasterGUI:
                     self.pause_event.wait()
                     if not self.running:
                         break
-
-                    # Cek apakah masih di halaman realisasi, jika tidak → navigasi ulang
-                    if i > 0 and not find_tambah_button(self.driver):
-                        self._log("  Halaman realisasi hilang, navigasi ulang...")
-                        safe_get(self.driver, url)
-                        time.sleep(DELAY_LONG)
-                        re_link = find_breakdown_link(self.driver, kegiatan)
-                        if re_link:
-                            re_link.click()
-                            time.sleep(DELAY_LONG)
-                        else:
-                            self._log(f"  Gagal kembali ke halaman realisasi!")
-                            total_fail += 1
-                            done += 1
-                            continue
 
                     done += 1
                     tgl = entry.get("tanggal", "")
@@ -1292,7 +1337,7 @@ class EMasterGUI:
                                     self._update_progress(d, t, k))
 
                     try:
-                        ok = fill_single_entry(self.driver, entry, log_fn=self._log)
+                        ok = fill_single_entry(self.driver, entry, log_fn=self._log, tambah_url=tambah_url)
                         if ok:
                             total_success += 1
                             self._log(f"    >> BERHASIL")
