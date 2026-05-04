@@ -768,7 +768,14 @@ def handle_kamus_popup(driver, keyword, log_fn=None):
     return False
 
 
-def fill_single_entry(driver, entry, log_fn=None, tambah_url=""):
+def fill_single_entry(driver, entry, log_fn=None):
+    """Isi satu entry form Tambah Aktivitas.
+
+    Alur (sesuai e-MASTER):
+      1. Halaman realisasi → klik Tambah → halaman form
+      2. Isi field: tanggal, detail aktivitas (kamus), volume, objek kerja
+      3. Klik Save + accept confirm() → halaman kembali ke realisasi
+    """
     from selenium.webdriver.common.by import By
 
     def _log(msg):
@@ -777,23 +784,20 @@ def fill_single_entry(driver, entry, log_fn=None, tambah_url=""):
 
     dismiss_alert(driver)
 
-    # 0. Navigasi ke form Tambah Aktivitas
-    if tambah_url:
-        _log("    [Step 1] Navigasi langsung ke form Tambah")
-        safe_get(driver, tambah_url)
+    # 0. Klik tombol Tambah di halaman realisasi
+    tambah = find_tambah_button(driver)
+    if tambah:
+        tambah.click()
+        _log("    [Step 1] Klik 'Tambah'")
         time.sleep(DELAY_LONG)
     else:
-        tambah = find_tambah_button(driver)
-        if tambah:
-            tambah.click()
-            _log("    [Step 1] Klik 'Tambah'")
-            time.sleep(DELAY_LONG)
-        else:
-            _log("    [Step 1] Tombol 'Tambah' TIDAK DITEMUKAN!")
-            buttons = driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button']")
-            btn_texts = [f"'{(b.text or b.get_attribute('value') or '')[:30]}'" for b in buttons[:10]]
-            _log(f"    [Debug] Tombol yang ada: {', '.join(btn_texts)}")
-            return False
+        _log("    [Step 1] Tombol 'Tambah' TIDAK DITEMUKAN!")
+        _log(f"    [Debug] URL: {driver.current_url[:80]}")
+        _log(f"    [Debug] Title: {driver.title[:60]}")
+        buttons = driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button']")
+        btn_texts = [f"'{(b.text or b.get_attribute('value') or '')[:30]}'" for b in buttons[:10]]
+        _log(f"    [Debug] Tombol yang ada: {', '.join(btn_texts)}")
+        return False
 
     filled = 0
 
@@ -1353,25 +1357,6 @@ class EMasterGUI:
                 self._log(f"  [Debug] URL: {self.driver.current_url[:80]}")
                 self._log(f"  [Debug] Title: {self.driver.title[:60]}")
 
-                # Ambil URL form Tambah dari tombol
-                tambah_url = get_tambah_url(self.driver)
-                if tambah_url:
-                    self._log(f"Tambah URL: {tambah_url[:60]}...")
-                else:
-                    self._log("Tidak bisa extract Tambah URL, akan pakai klik tombol")
-                    # Debug: log semua tombol/link di halaman
-                    from selenium.webdriver.common.by import By
-                    all_btns = self.driver.find_elements(By.CSS_SELECTOR,
-                        "input[type='button'], button, a.btn")
-                    btn_info = []
-                    for b in all_btns[:15]:
-                        txt = (b.text or b.get_attribute("value") or "").strip()[:30]
-                        href = (b.get_attribute("href") or "")[:40]
-                        onclick = (b.get_attribute("onclick") or "")[:40]
-                        if txt or href or onclick:
-                            btn_info.append(f"'{txt}' href={href} onclick={onclick}")
-                    self._log(f"  [Debug] Tombol/link: {'; '.join(btn_info[:10])}")
-
                 # Isi entries
                 for i, entry in enumerate(entries):
                     if not self.running:
@@ -1398,7 +1383,7 @@ class EMasterGUI:
                                     self._update_progress(d, t, k))
 
                     try:
-                        ok = fill_single_entry(self.driver, entry, log_fn=self._log, tambah_url=tambah_url)
+                        ok = fill_single_entry(self.driver, entry, log_fn=self._log)
                         if ok:
                             total_success += 1
                             self._log(f"    >> BERHASIL")
