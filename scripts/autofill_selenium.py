@@ -91,11 +91,19 @@ def safe_get(driver, url: str):
     dismiss_alert(driver)
 
 
+def _get_profile_dir():
+    """Folder profil Chrome di samping script ini untuk simpan cookies."""
+    return str(Path(__file__).parent.parent / "emaster_chrome_profile")
+
+
 def create_driver(headless: bool = False) -> webdriver.Chrome:
-    """Buat instance Chrome WebDriver."""
+    """Buat instance Chrome WebDriver dengan profil tersimpan."""
     options = Options()
     if headless:
         options.add_argument("--headless=new")
+    # Simpan session/cookies di folder profil lokal
+    profile_dir = _get_profile_dir()
+    options.add_argument(f"--user-data-dir={profile_dir}")
     options.add_argument("--no-sandbox")
     options.add_argument("--disable-dev-shm-usage")
     options.add_argument("--window-size=1366,768")
@@ -104,6 +112,20 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
     driver = webdriver.Chrome(options=options)
     driver.implicitly_wait(5)
     return driver
+
+
+def is_logged_in(driver, bulan: str = "04") -> bool:
+    """Cek apakah sudah login dengan buka halaman aktivitas."""
+    test_url = AKTIVITAS_URL.format(bulan=bulan)
+    safe_get(driver, test_url)
+    time.sleep(DELAY_LONG)
+    dismiss_alert(driver)
+    current_url = driver.current_url.lower()
+    page_src = driver.page_source.lower()
+    if ("login" in page_src and "password" in page_src and "nip" in page_src) or \
+       current_url.rstrip("/") == BASE_URL.lower().rstrip("/"):
+        return False
+    return True
 
 
 def find_by_labels(driver, labels: list[str], tag: str = "*"):
@@ -829,22 +851,29 @@ def main():
     driver = create_driver(headless=args.headless)
 
     try:
-        # Login
+        bulan = data.get("bulan", "04")
+
+        # Cek apakah sudah login dari session/cookies sebelumnya
         if not args.skip_login:
-            nip = args.nip
-            password = args.password
+            log.info("Cek session login dari cookies tersimpan...")
+            if is_logged_in(driver, bulan):
+                log.info("Session masih aktif! Skip login & OTP.")
+            else:
+                log.info("Belum login. Memulai proses login...")
+                nip = args.nip
+                password = args.password
 
-            if not nip:
-                nip = input("Masukkan NIP: ").strip()
-            if not password:
-                import getpass
-                password = getpass.getpass("Masukkan Password: ").strip()
+                if not nip:
+                    nip = input("Masukkan NIP: ").strip()
+                if not password:
+                    import getpass
+                    password = getpass.getpass("Masukkan Password: ").strip()
 
-            if not login(driver, nip, password):
-                log.error("Login gagal!")
-                return
+                if not login(driver, nip, password):
+                    log.error("Login gagal!")
+                    return
 
-            handle_2fa(driver, bulan=data.get("bulan", "04"))
+                handle_2fa(driver, bulan=bulan)
 
         # Jalankan auto-fill
         run_autofill(driver, data, dry_run=args.dry_run,
