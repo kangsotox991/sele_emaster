@@ -796,12 +796,24 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
 def _navigate_to_realisasi(driver, bulan: str, kegiatan: str, dry_run: bool = False):
     """Navigasi ke halaman realisasi breakdown tertentu.
 
+    Halaman Aktivitas Bulan bisa langsung menampilkan detail + tombol Tambah
+    (tanpa perlu klik link breakdown). Cek Tambah dulu sebelum cari link.
+
     Returns: True jika berhasil, False jika gagal.
     """
     aktivitas_url = AKTIVITAS_URL.format(bulan=bulan)
     safe_get(driver, aktivitas_url)
     time.sleep(DELAY_LONG)
 
+    log.info(f"  [Debug] URL: {driver.current_url[:80]}")
+    log.info(f"  [Debug] Title: {driver.title[:60]}")
+
+    # Cek apakah tombol Tambah sudah ada di halaman ini
+    if find_tambah_button(driver):
+        log.info("  Tombol Tambah sudah ada, langsung mulai isi form")
+        return True
+
+    # Belum ada Tambah → cari link breakdown dan navigasi
     realisasi_url = find_breakdown_link(driver, kegiatan)
     if realisasi_url:
         if not dry_run:

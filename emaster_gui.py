@@ -1341,21 +1341,26 @@ class EMasterGUI:
                 safe_get(self.driver, url)
                 time.sleep(DELAY_LONG)
 
-                # Cari link realisasi breakdown
-                realisasi_url = find_breakdown_link(self.driver, kegiatan, log_fn=self._log)
-                if realisasi_url:
-                    self._log(f"Navigasi ke realisasi: {realisasi_url[:60]}...")
-                    safe_get(self.driver, realisasi_url)
-                    time.sleep(DELAY_LONG)
-                else:
-                    self._log(f"Link realisasi TIDAK DITEMUKAN: {kegiatan}")
-                    total_fail += len(entries)
-                    done += len(entries)
-                    continue
-
-                # Debug: log halaman saat ini
                 self._log(f"  [Debug] URL: {self.driver.current_url[:80]}")
                 self._log(f"  [Debug] Title: {self.driver.title[:60]}")
+
+                # Cek apakah tombol Tambah sudah ada di halaman ini
+                # (halaman Aktivitas Bulan bisa langsung tampilkan detail + Tambah)
+                tambah_check = find_tambah_button(self.driver)
+                if tambah_check:
+                    self._log(f"Tombol Tambah sudah ada, langsung mulai isi form")
+                else:
+                    # Belum ada Tambah → cari link breakdown dan navigasi
+                    realisasi_url = find_breakdown_link(self.driver, kegiatan, log_fn=self._log)
+                    if realisasi_url:
+                        self._log(f"Navigasi ke realisasi: {realisasi_url[:60]}...")
+                        safe_get(self.driver, realisasi_url)
+                        time.sleep(DELAY_LONG)
+                    else:
+                        self._log(f"Link realisasi & Tambah TIDAK DITEMUKAN: {kegiatan}")
+                        total_fail += len(entries)
+                        done += len(entries)
+                        continue
 
                 # Isi entries
                 for i, entry in enumerate(entries):
