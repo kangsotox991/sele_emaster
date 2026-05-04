@@ -530,25 +530,70 @@ def do_login(driver, nip, password):
     return False
 
 
-def find_breakdown_link(driver, kegiatan_name):
+def find_breakdown_link(driver, kegiatan_name, log_fn=None):
+    """Cari link realisasi untuk breakdown tertentu di halaman Aktivitas Bulan.
+
+    Return URL string (bukan element) agar bisa navigasi langsung via safe_get.
+    """
     from selenium.webdriver.common.by import By
+
+    def _log(msg):
+        if log_fn:
+            log_fn(msg)
+
+    # Cari di tabel breakdown
     rows = driver.find_elements(By.CSS_SELECTOR, "table#sort-table1 tbody tr")
+    if not rows:
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+
+    _log(f"  [Debug] Jumlah baris tabel: {len(rows)}")
+
+    # Selector link yang mungkin: realisasi, detail, wrench icon
+    link_selectors = [
+        "a[href*='realisasi']",
+        "a[href*='detail']",
+        "a.btn",
+        "a[href*='aktifitas_bulan']",
+        "a",
+    ]
+
     for row in rows:
         try:
-            if kegiatan_name.lower() in row.text.lower():
-                link = row.find_element(By.CSS_SELECTOR, "a[href*='realisasi']")
-                return link
+            row_text = row.text.strip()
+            if not row_text:
+                continue
+            if kegiatan_name.lower() not in row_text.lower():
+                continue
+
+            _log(f"  [Debug] Baris cocok: '{row_text[:60]}...'")
+
+            # Coba setiap selector
+            for selector in link_selectors:
+                links = row.find_elements(By.CSS_SELECTOR, selector)
+                for link in links:
+                    href = link.get_attribute("href") or ""
+                    if not href or href == "#":
+                        continue
+                    _log(f"  [Debug] Link ditemukan: {href[:80]}")
+                    return href
         except Exception:
             continue
 
-    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='realisasi']")
-    for link in links:
-        try:
-            parent_row = link.find_element(By.XPATH, "./ancestor::tr")
-            if kegiatan_name.lower() in parent_row.text.lower():
-                return link
-        except Exception:
-            continue
+    # Fallback: cari semua link dengan keyword realisasi
+    for selector in link_selectors[:2]:
+        links = driver.find_elements(By.CSS_SELECTOR, selector)
+        for link in links:
+            try:
+                parent_row = link.find_element(By.XPATH, "./ancestor::tr")
+                if kegiatan_name.lower() in parent_row.text.lower():
+                    href = link.get_attribute("href") or ""
+                    if href and href != "#":
+                        _log(f"  [Debug] Link fallback: {href[:80]}")
+                        return href
+            except Exception:
+                continue
+
+    _log(f"  [Debug] Tidak ada link ditemukan untuk: {kegiatan_name[:40]}")
     return None
 
 
@@ -723,7 +768,14 @@ def handle_kamus_popup(driver, keyword, log_fn=None):
     return False
 
 
-def fill_single_entry(driver, entry, log_fn=None, tambah_url=""):
+def fill_single_entry(driver, entry, log_fn=None):
+    """Isi satu entry form Tambah Aktivitas.
+
+    Alur (sesuai e-MASTER):
+      1. Halaman realisasi → klik Tambah → halaman form
+      2. Isi field: tanggal, detail aktivitas (kamus), volume, objek kerja
+      3. Klik Save + accept confirm() → halaman kembali ke realisasi
+    """
     from selenium.webdriver.common.by import By
 
     def _log(msg):
@@ -732,23 +784,20 @@ def fill_single_entry(driver, entry, log_fn=None, tambah_url=""):
 
     dismiss_alert(driver)
 
-    # 0. Navigasi ke form Tambah Aktivitas
-    if tambah_url:
-        _log("    [Step 1] Navigasi langsung ke form Tambah")
-        safe_get(driver, tambah_url)
+    # 0. Klik tombol Tambah di halaman realisasi
+    tambah = find_tambah_button(driver)
+    if tambah:
+        tambah.click()
+        _log("    [Step 1] Klik 'Tambah'")
         time.sleep(DELAY_LONG)
     else:
-        tambah = find_tambah_button(driver)
-        if tambah:
-            tambah.click()
-            _log("    [Step 1] Klik 'Tambah'")
-            time.sleep(DELAY_LONG)
-        else:
-            _log("    [Step 1] Tombol 'Tambah' TIDAK DITEMUKAN!")
-            buttons = driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button']")
-            btn_texts = [f"'{(b.text or b.get_attribute('value') or '')[:30]}'" for b in buttons[:10]]
-            _log(f"    [Debug] Tombol yang ada: {', '.join(btn_texts)}")
-            return False
+        _log("    [Step 1] Tombol 'Tambah' TIDAK DITEMUKAN!")
+        _log(f"    [Debug] URL: {driver.current_url[:80]}")
+        _log(f"    [Debug] Title: {driver.title[:60]}")
+        buttons = driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button']")
+        btn_texts = [f"'{(b.text or b.get_attribute('value') or '')[:30]}'" for b in buttons[:10]]
+        _log(f"    [Debug] Tombol yang ada: {', '.join(btn_texts)}")
+        return False
 
     filled = 0
 
@@ -1161,15 +1210,29 @@ class EMasterGUI:
 
     def _is_logged_in(self, bulan):
         """Cek apakah sudah login dengan buka halaman aktivitas."""
+        import os
+        profile_dir = _get_profile_dir()
+        self._log(f"  [Debug] Chrome profile: {profile_dir}")
+        self._log(f"  [Debug] Profile exists: {os.path.exists(profile_dir)}")
+
         test_url = AKTIVITAS_URL.format(bulan=bulan)
         safe_get(self.driver, test_url)
         time.sleep(DELAY_LONG)
         dismiss_alert(self.driver)
         current_url = self.driver.current_url.lower()
         page_src = self.driver.page_source.lower()
-        if ("login" in page_src and "password" in page_src and "nip" in page_src) or \
-           current_url.rstrip("/") == BASE_URL.lower().rstrip("/"):
+
+        self._log(f"  [Debug] URL setelah cek: {current_url[:80]}")
+
+        # Cek apakah halaman login (ada form NIP + password)
+        is_login_page = ("login" in page_src and "password" in page_src and "nip" in page_src)
+        is_base_url = current_url.rstrip("/") == BASE_URL.lower().rstrip("/")
+
+        if is_login_page or is_base_url:
+            self._log(f"  [Debug] Belum login (login_page={is_login_page}, base_url={is_base_url})")
             return False
+
+        self._log(f"  [Debug] Sudah login (halaman bukan login)")
         return True
 
     def _run_autofill(self):
@@ -1278,24 +1341,26 @@ class EMasterGUI:
                 safe_get(self.driver, url)
                 time.sleep(DELAY_LONG)
 
-                # Klik kunci pas
-                link = find_breakdown_link(self.driver, kegiatan)
-                if link:
-                    link.click()
-                    self._log(f"Klik kunci pas: {kegiatan[:40]}...")
-                    time.sleep(DELAY_LONG)
-                else:
-                    self._log(f"Link realisasi TIDAK DITEMUKAN: {kegiatan}")
-                    total_fail += len(entries)
-                    done += len(entries)
-                    continue
+                self._log(f"  [Debug] URL: {self.driver.current_url[:80]}")
+                self._log(f"  [Debug] Title: {self.driver.title[:60]}")
 
-                # Ambil URL form Tambah dari tombol
-                tambah_url = get_tambah_url(self.driver)
-                if tambah_url:
-                    self._log(f"Tambah URL: {tambah_url[:60]}...")
+                # Cek apakah tombol Tambah sudah ada di halaman ini
+                # (halaman Aktivitas Bulan bisa langsung tampilkan detail + Tambah)
+                tambah_check = find_tambah_button(self.driver)
+                if tambah_check:
+                    self._log(f"Tombol Tambah sudah ada, langsung mulai isi form")
                 else:
-                    self._log("Tidak bisa extract Tambah URL, akan pakai klik tombol")
+                    # Belum ada Tambah → cari link breakdown dan navigasi
+                    realisasi_url = find_breakdown_link(self.driver, kegiatan, log_fn=self._log)
+                    if realisasi_url:
+                        self._log(f"Navigasi ke realisasi: {realisasi_url[:60]}...")
+                        safe_get(self.driver, realisasi_url)
+                        time.sleep(DELAY_LONG)
+                    else:
+                        self._log(f"Link realisasi & Tambah TIDAK DITEMUKAN: {kegiatan}")
+                        total_fail += len(entries)
+                        done += len(entries)
+                        continue
 
                 # Isi entries
                 for i, entry in enumerate(entries):
@@ -1323,7 +1388,7 @@ class EMasterGUI:
                                     self._update_progress(d, t, k))
 
                     try:
-                        ok = fill_single_entry(self.driver, entry, log_fn=self._log, tambah_url=tambah_url)
+                        ok = fill_single_entry(self.driver, entry, log_fn=self._log)
                         if ok:
                             total_success += 1
                             self._log(f"    >> BERHASIL")

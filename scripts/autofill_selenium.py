@@ -116,15 +116,28 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
 
 def is_logged_in(driver, bulan: str = "04") -> bool:
     """Cek apakah sudah login dengan buka halaman aktivitas."""
+    import os
+    profile_dir = _get_profile_dir()
+    log.info(f"  [Debug] Chrome profile: {profile_dir}")
+    log.info(f"  [Debug] Profile exists: {os.path.exists(profile_dir)}")
+
     test_url = AKTIVITAS_URL.format(bulan=bulan)
     safe_get(driver, test_url)
     time.sleep(DELAY_LONG)
     dismiss_alert(driver)
     current_url = driver.current_url.lower()
     page_src = driver.page_source.lower()
-    if ("login" in page_src and "password" in page_src and "nip" in page_src) or \
-       current_url.rstrip("/") == BASE_URL.lower().rstrip("/"):
+
+    log.info(f"  [Debug] URL setelah cek: {current_url[:80]}")
+
+    is_login_page = ("login" in page_src and "password" in page_src and "nip" in page_src)
+    is_base_url = current_url.rstrip("/") == BASE_URL.lower().rstrip("/")
+
+    if is_login_page or is_base_url:
+        log.info(f"  [Debug] Belum login (login_page={is_login_page}, base_url={is_base_url})")
         return False
+
+    log.info("  [Debug] Sudah login (halaman bukan login)")
     return True
 
 
@@ -379,31 +392,60 @@ def handle_2fa(driver, bulan: str = "04"):
 # ============================================================================
 
 def find_breakdown_link(driver, kegiatan_name: str):
-    """Cari link realisasi (icon kunci pas) untuk breakdown tertentu.
+    """Cari link realisasi untuk breakdown tertentu di halaman Aktivitas Bulan.
 
-    Pada halaman Aktivitas Bulan, setiap breakdown punya baris tabel dengan
-    nama kegiatan dan icon wrench (kunci pas) untuk masuk ke halaman realisasi.
+    Return URL string (bukan element) agar bisa navigasi langsung via safe_get.
     """
     rows = driver.find_elements(By.CSS_SELECTOR, "table#sort-table1 tbody tr")
+    if not rows:
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr")
+
+    log.info(f"  [Debug] Jumlah baris tabel: {len(rows)}")
+
+    link_selectors = [
+        "a[href*='realisasi']",
+        "a[href*='detail']",
+        "a.btn",
+        "a[href*='aktifitas_bulan']",
+        "a",
+    ]
+
     for row in rows:
         try:
-            row_text = row.text.lower()
-            if kegiatan_name.lower() in row_text:
-                link = row.find_element(By.CSS_SELECTOR, "a[href*='realisasi']")
-                return link
+            row_text = row.text.strip()
+            if not row_text:
+                continue
+            if kegiatan_name.lower() not in row_text.lower():
+                continue
+
+            log.info(f"  [Debug] Baris cocok: '{row_text[:60]}...'")
+
+            for selector in link_selectors:
+                links = row.find_elements(By.CSS_SELECTOR, selector)
+                for link in links:
+                    href = link.get_attribute("href") or ""
+                    if not href or href == "#":
+                        continue
+                    log.info(f"  [Debug] Link ditemukan: {href[:80]}")
+                    return href
         except Exception:
             continue
 
-    # Fallback: cari semua link realisasi dan cocokkan
-    links = driver.find_elements(By.CSS_SELECTOR, "a[href*='realisasi']")
-    for link in links:
-        try:
-            parent_row = link.find_element(By.XPATH, "./ancestor::tr")
-            if kegiatan_name.lower() in parent_row.text.lower():
-                return link
-        except Exception:
-            continue
+    # Fallback
+    for selector in link_selectors[:2]:
+        links = driver.find_elements(By.CSS_SELECTOR, selector)
+        for link in links:
+            try:
+                parent_row = link.find_element(By.XPATH, "./ancestor::tr")
+                if kegiatan_name.lower() in parent_row.text.lower():
+                    href = link.get_attribute("href") or ""
+                    if href and href != "#":
+                        log.info(f"  [Debug] Link fallback: {href[:80]}")
+                        return href
+            except Exception:
+                continue
 
+    log.warning(f"  [Debug] Tidak ada link ditemukan untuk: {kegiatan_name[:40]}")
     return None
 
 
@@ -620,39 +662,30 @@ def handle_detail_aktivitas_popup(driver, keyword: str, dry_run: bool = False) -
     return False
 
 
-def fill_single_entry(driver, entry: dict, dry_run: bool = False,
-                      tambah_url: str = "") -> bool:
+def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
     """Isi satu entry aktivitas.
 
-    Alur:
-      1. Navigasi ke halaman form via tambah_url (atau klik tombol Tambah)
-      2. Isi field pada form "Tambah Aktivitas":
-         - Tanggal Aktivitas (dari Excel)
-         - Detail Aktivitas (via popup Kamus → cari "Manajemen Asuhan Keperawatan")
-         - Satuan & WPT (otomatis dari Kamus, tidak perlu diisi)
-         - Volume (dari Excel)
-         - Objek Kerja / Topik (dari Excel)
-      3. Klik Save
+    Alur (sesuai e-MASTER):
+      1. Halaman realisasi → klik Tambah → halaman form
+      2. Isi field: tanggal, detail aktivitas (kamus), volume, objek kerja
+      3. Klik Save + accept confirm() → halaman kembali ke realisasi
     """
     log.info(f"  Mengisi: tgl={entry.get('tanggal')}, objek={entry.get('objek_kerja', '')[:40]}...")
 
     dismiss_alert(driver)
 
-    # Navigasi ke halaman form Tambah Aktivitas
-    if tambah_url and not dry_run:
-        log.info(f"  Navigasi langsung ke form Tambah")
-        safe_get(driver, tambah_url)
+    # Klik tombol Tambah di halaman realisasi
+    tambah = find_tambah_button(driver)
+    if tambah:
+        if not dry_run:
+            tambah.click()
+        log.info("  Klik Tambah")
         time.sleep(DELAY_LONG)
     else:
-        tambah = find_tambah_button(driver)
-        if tambah:
-            if not dry_run:
-                tambah.click()
-            log.info("  Klik Tambah")
-            time.sleep(DELAY_LONG)
-        else:
-            log.warning("  Tombol Tambah tidak ditemukan")
-            return False
+        log.warning("  Tombol Tambah tidak ditemukan")
+        log.info(f"  [Debug] URL: {driver.current_url[:80]}")
+        log.info(f"  [Debug] Title: {driver.title[:60]}")
+        return False
 
     filled = 0
 
@@ -763,17 +796,32 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False,
 def _navigate_to_realisasi(driver, bulan: str, kegiatan: str, dry_run: bool = False):
     """Navigasi ke halaman realisasi breakdown tertentu.
 
+    Halaman Aktivitas Bulan bisa langsung menampilkan detail + tombol Tambah
+    (tanpa perlu klik link breakdown). Cek Tambah dulu sebelum cari link.
+
     Returns: True jika berhasil, False jika gagal.
     """
     aktivitas_url = AKTIVITAS_URL.format(bulan=bulan)
     safe_get(driver, aktivitas_url)
     time.sleep(DELAY_LONG)
 
-    link = find_breakdown_link(driver, kegiatan)
-    if link:
+    log.info(f"  [Debug] URL: {driver.current_url[:80]}")
+    log.info(f"  [Debug] Title: {driver.title[:60]}")
+
+    # Cek apakah tombol Tambah sudah ada di halaman ini
+    if find_tambah_button(driver):
+        log.info("  Tombol Tambah sudah ada, langsung mulai isi form")
+        return True
+
+    # Belum ada Tambah → cari link breakdown dan navigasi
+    realisasi_url = find_breakdown_link(driver, kegiatan)
+    if realisasi_url:
         if not dry_run:
-            link.click()
+            log.info(f"  Navigasi ke realisasi: {realisasi_url[:80]}")
+            safe_get(driver, realisasi_url)
         time.sleep(DELAY_LONG)
+        log.info(f"  [Debug] URL: {driver.current_url[:80]}")
+        log.info(f"  [Debug] Title: {driver.title[:60]}")
         return True
 
     return False
@@ -801,21 +849,14 @@ def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False
 
     log.info(f"Berhasil buka halaman realisasi: {kegiatan[:50]}")
 
-    # Ambil URL form Tambah dari tombol (agar bisa navigasi langsung per entry)
-    tambah_url = get_tambah_url(driver)
-    if tambah_url:
-        log.info(f"Tambah URL: {tambah_url[:80]}...")
-    else:
-        log.warning("Tidak bisa extract Tambah URL, akan pakai klik tombol")
-
-    # Isi setiap entry
+    # Isi setiap entry — setelah Save, halaman kembali ke realisasi otomatis
     success_count = 0
     fail_count = 0
     for i, entry in enumerate(entries):
         log.info(f"\n--- Entry {i+1}/{len(entries)} ---")
 
         try:
-            ok = fill_single_entry(driver, entry, dry_run, tambah_url=tambah_url)
+            ok = fill_single_entry(driver, entry, dry_run)
             if ok:
                 success_count += 1
             else:
