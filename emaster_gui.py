@@ -120,6 +120,8 @@ def convert_excel_to_json(excel_path: str) -> dict:
             col_map["volume"] = i
         elif "beban" in h_lower:
             col_map["beban_kerja"] = i
+        elif "satuan" in h_lower:
+            col_map["satuan"] = i
         elif "durasi" in h_lower or "wpt" in h_lower or (
             "menit" in h_lower and "beban" not in h_lower
         ):
@@ -191,12 +193,17 @@ def convert_excel_to_json(excel_path: str) -> dict:
             val = row_data[col_map["beban_kerja"]]
             beban_kerja = str(int(val)) if val and isinstance(val, (int, float)) else str(val or "")
 
+        satuan = "Pasien"
+        if "satuan" in col_map:
+            val = row_data[col_map["satuan"]]
+            satuan = str(val).strip() if val else "Pasien"
+
         entry = {
             "hari": current_hari,
             "tanggal": current_tanggal,
             "detail_aktivitas": kegiatan,
             "objek_kerja": objek_kerja,
-            "satuan": "Pasien",
+            "satuan": satuan,
             "wpt_menit": durasi,
             "volume": volume,
             "beban_kerja": beban_kerja,
@@ -232,7 +239,6 @@ def convert_excel_to_json(excel_path: str) -> dict:
                 "Sampling Darah Vena Instalasi",
                 "Terapi Injeksi Parenteral",
                 "Pasang Infus",
-                "Terapi Injeksi Parenteral",
             ],
             "mode": "rotating",
         },
@@ -1016,8 +1022,12 @@ class EMasterGUI:
 
     def _log(self, msg):
         timestamp = datetime.now().strftime("%H:%M:%S")
-        self.log_text.insert(tk.END, f"[{timestamp}] {msg}\n")
-        self.log_text.see(tk.END)
+        line = f"[{timestamp}] {msg}\n"
+        if threading.current_thread() is threading.main_thread():
+            self.log_text.insert(tk.END, line)
+            self.log_text.see(tk.END)
+        else:
+            self.root.after(0, lambda l=line: (self.log_text.insert(tk.END, l), self.log_text.see(tk.END)))
 
     def _update_progress(self, current, total, text=""):
         pct = int((current / total) * 100) if total > 0 else 0

@@ -119,6 +119,45 @@
   }
 
   /**
+   * Convert DD-MM-YYYY to sortable array [YYYY, MM, DD].
+   */
+  function dateSortKey(dateStr) {
+    if (!dateStr) return [9999, 99, 99];
+    const parts = dateStr.replace(/\//g, "-").split("-");
+    if (parts.length === 3) {
+      return [parseInt(parts[2], 10), parseInt(parts[1], 10), parseInt(parts[0], 10)];
+    }
+    return [9999, 99, 99];
+  }
+
+  /**
+   * Bandingkan dua date key arrays.
+   * Returns: -1 if a < b, 0 if a == b, 1 if a > b
+   */
+  function compareDateKeys(a, b) {
+    for (let i = 0; i < 3; i++) {
+      if (a[i] < b[i]) return -1;
+      if (a[i] > b[i]) return 1;
+    }
+    return 0;
+  }
+
+  /**
+   * Filter entries berdasarkan rentang tanggal.
+   */
+  function filterEntriesByDate(entries, dateFrom, dateTo) {
+    if (!dateFrom && !dateTo) return entries;
+    const fromKey = dateFrom ? dateSortKey(dateFrom) : [0, 0, 0];
+    const toKey = dateTo ? dateSortKey(dateTo) : [9999, 99, 99];
+    return entries.filter(entry => {
+      const tgl = entry.tanggal || "";
+      if (!tgl) return false;
+      const key = dateSortKey(tgl);
+      return compareDateKeys(key, fromKey) >= 0 && compareDateKeys(key, toKey) <= 0;
+    });
+  }
+
+  /**
    * Deteksi jenis halaman e-MASTER saat ini.
    * Returns: "tambah" | "realisasi" | "aktivitas_bulan" | "unknown"
    */
@@ -794,6 +833,15 @@
           <input type="number" id="af-start-entry" value="1" min="1" />
           <span style="font-size:10px;color:#999;">(default: 1 = dari awal)</span>
         </div>
+        <div class="af-group">
+          <label>Filter Tanggal:</label>
+          <div style="display:flex;gap:6px;align-items:center;">
+            <input type="text" id="af-date-from" placeholder="DD-MM-YYYY" style="width:45%;" />
+            <span style="font-size:11px;">s/d</span>
+            <input type="text" id="af-date-to" placeholder="DD-MM-YYYY" style="width:45%;" />
+          </div>
+          <span style="font-size:10px;color:#999;">(kosongkan = semua tanggal)</span>
+        </div>
 
         <div class="af-section-title">3. Aksi</div>
         <p style="font-size:11px;color:#666;margin:4px 0;">
@@ -861,6 +909,24 @@
       if (!bd) {
         addLog("Breakdown tidak ditemukan!", "err");
         return;
+      }
+
+      // Filter entries berdasarkan tanggal
+      const dateFrom = (document.getElementById("af-date-from")?.value || "").trim();
+      const dateTo = (document.getElementById("af-date-to")?.value || "").trim();
+      let filteredEntries = filterEntriesByDate(bd.entries, dateFrom, dateTo);
+
+      if (filteredEntries.length === 0) {
+        addLog("Tidak ada entry yang sesuai filter tanggal!", "err");
+        return;
+      }
+
+      if (dateFrom || dateTo) {
+        addLog(`Filter tanggal: ${dateFrom || "awal"} s/d ${dateTo || "akhir"}`, "info");
+        addLog(`${filteredEntries.length}/${bd.entries.length} entry sesuai filter`, "info");
+        // Simpan filtered entries ke data sementara
+        bd.entries = filteredEntries;
+        GM_setValue("emaster_activities", JSON.stringify(data));
       }
 
       const startEntry = parseInt(document.getElementById("af-start-entry")?.value || "1") - 1;
