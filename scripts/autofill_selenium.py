@@ -692,6 +692,30 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
     return filled > 0
 
 
+def _navigate_to_realisasi(driver, bulan: str, kegiatan: str, dry_run: bool = False):
+    """Navigasi ke halaman realisasi breakdown tertentu.
+
+    Returns: True jika berhasil, False jika gagal.
+    """
+    aktivitas_url = AKTIVITAS_URL.format(bulan=bulan)
+    safe_get(driver, aktivitas_url)
+    time.sleep(DELAY_LONG)
+
+    link = find_breakdown_link(driver, kegiatan)
+    if link:
+        if not dry_run:
+            link.click()
+        time.sleep(DELAY_LONG)
+        return True
+
+    return False
+
+
+def _is_on_realisasi_page(driver):
+    """Cek apakah masih di halaman realisasi (ada tombol Tambah)."""
+    return find_tambah_button(driver) is not None
+
+
 def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False):
     """Proses satu breakdown: navigasi ke realisasi dan isi semua entry."""
     kegiatan = breakdown["kegiatan_tugas_jabatan"]
@@ -701,32 +725,28 @@ def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False
     log.info(f"Jumlah entry: {len(entries)}")
     log.info(f"{'='*60}")
 
-    # Navigasi ke halaman Aktivitas Bulan
-    aktivitas_url = AKTIVITAS_URL.format(bulan=bulan)
-    log.info(f"Membuka halaman aktivitas: {aktivitas_url}")
-    safe_get(driver, aktivitas_url)
-    time.sleep(DELAY_LONG)
-
-    # Cari dan klik link realisasi (icon kunci pas)
-    link = find_breakdown_link(driver, kegiatan)
-    if link:
-        href = link.get_attribute("href") or ""
-        log.info(f"Ditemukan link realisasi: {href[:80]}...")
-        if not dry_run:
-            link.click()
-        else:
-            log.info(f"[DRY-RUN] Akan klik link realisasi untuk '{kegiatan}'")
-        time.sleep(DELAY_LONG)
-    else:
+    # Navigasi pertama ke halaman realisasi
+    if not _navigate_to_realisasi(driver, bulan, kegiatan, dry_run):
         log.error(f"Link realisasi untuk '{kegiatan}' TIDAK DITEMUKAN!")
         log.error("Pastikan nama kegiatan cocok dengan yang ada di e-MASTER.")
         return 0, len(entries)
+
+    log.info(f"Berhasil buka halaman realisasi: {kegiatan[:50]}")
 
     # Isi setiap entry
     success_count = 0
     fail_count = 0
     for i, entry in enumerate(entries):
         log.info(f"\n--- Entry {i+1}/{len(entries)} ---")
+
+        # Cek apakah masih di halaman realisasi, jika tidak → navigasi ulang
+        if i > 0 and not _is_on_realisasi_page(driver):
+            log.info("  Halaman realisasi hilang, navigasi ulang...")
+            if not _navigate_to_realisasi(driver, bulan, kegiatan, dry_run):
+                log.error("  Gagal kembali ke halaman realisasi!")
+                fail_count += 1
+                continue
+
         try:
             ok = fill_single_entry(driver, entry, dry_run)
             if ok:

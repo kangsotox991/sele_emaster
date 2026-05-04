@@ -1261,6 +1261,21 @@ class EMasterGUI:
                     if not self.running:
                         break
 
+                    # Cek apakah masih di halaman realisasi, jika tidak → navigasi ulang
+                    if i > 0 and not find_tambah_button(self.driver):
+                        self._log("  Halaman realisasi hilang, navigasi ulang...")
+                        safe_get(self.driver, url)
+                        time.sleep(DELAY_LONG)
+                        re_link = find_breakdown_link(self.driver, kegiatan)
+                        if re_link:
+                            re_link.click()
+                            time.sleep(DELAY_LONG)
+                        else:
+                            self._log(f"  Gagal kembali ke halaman realisasi!")
+                            total_fail += 1
+                            done += 1
+                            continue
+
                     done += 1
                     tgl = entry.get("tanggal", "")
                     kw = entry.get("kamus_keyword", "")
