@@ -44,7 +44,7 @@ def parse_excel(file_path: str) -> dict:
             if lower_a == "nama" and cell_b:
                 info["nama"] = str(cell_b).strip().lstrip(": ")
             elif lower_a == "nip" and cell_b:
-                info["nip"] = str(cell_b).strip().lstrip(": ")
+                info["nip"] = str(cell_b).strip().lstrip(": ").replace(" ", "")
             elif "unit kerja" in lower_a and cell_b:
                 info["unit_kerja"] = str(cell_b).strip().lstrip(": ")
 

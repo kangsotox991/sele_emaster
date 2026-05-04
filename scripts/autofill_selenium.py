@@ -284,6 +284,7 @@ def normalize_date(date_str: str) -> str:
 
 def login(driver, nip: str, password: str):
     """Login ke e-MASTER dengan NIP dan password."""
+    nip = nip.replace(" ", "")
     log.info(f"Membuka halaman login: {LOGIN_URL}")
     safe_get(driver, LOGIN_URL)
     time.sleep(DELAY_MEDIUM)
