@@ -51,9 +51,9 @@ LOGIN_URL = BASE_URL
 AKTIVITAS_URL = f"{BASE_URL}/essmedia.php?module=aktifitas_bulan&bulan={{bulan}}"
 TAMBAH_URL = f"{BASE_URL}/essmedia.php?module=aktifitas_bulan&act=tambahaktifitas&bulan={{bulan}}&id_breakdown={{id_breakdown}}"
 
-DELAY_SHORT = 1
-DELAY_MEDIUM = 2
-DELAY_LONG = 3
+DELAY_SHORT = 0.5
+DELAY_MEDIUM = 1
+DELAY_LONG = 2
 
 
 # ============================================================================
@@ -319,7 +319,7 @@ def create_driver(headless=False):
     options.add_argument("--window-size=1366,768")
     options.add_argument("--disable-gpu")
     driver = webdriver.Chrome(options=options)
-    driver.implicitly_wait(5)
+    driver.implicitly_wait(1)
     return driver
 
 

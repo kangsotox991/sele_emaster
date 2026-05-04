@@ -48,9 +48,9 @@ BASE_URL = "https://master.bkd.jatimprov.go.id"
 LOGIN_URL = BASE_URL
 AKTIVITAS_URL = f"{BASE_URL}/essmedia.php?module=aktifitas_bulan&bulan={{bulan}}"
 
-DELAY_SHORT = 1       # detik
-DELAY_MEDIUM = 2      # detik
-DELAY_LONG = 3        # detik
+DELAY_SHORT = 0.5     # detik
+DELAY_MEDIUM = 1      # detik
+DELAY_LONG = 2        # detik
 WAIT_TIMEOUT = 15     # detik
 
 
@@ -110,7 +110,7 @@ def create_driver(headless: bool = False) -> webdriver.Chrome:
     options.add_argument("--disable-gpu")
 
     driver = webdriver.Chrome(options=options)
-    driver.implicitly_wait(5)
+    driver.implicitly_wait(1)
     return driver
 
 
