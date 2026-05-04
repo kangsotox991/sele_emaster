@@ -718,7 +718,37 @@ def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False
     return success_count, fail_count
 
 
-def run_autofill(driver, data: dict, dry_run: bool = False):
+def _date_sort_key(date_str: str) -> tuple:
+    """Convert DD-MM-YYYY to sortable tuple (YYYY, MM, DD)."""
+    try:
+        parts = date_str.replace("/", "-").split("-")
+        if len(parts) == 3:
+            return (int(parts[2]), int(parts[1]), int(parts[0]))
+    except (ValueError, IndexError):
+        pass
+    return (9999, 99, 99)
+
+
+def filter_entries_by_date(entries: list, date_from: str = None, date_to: str = None) -> list:
+    """Filter entries berdasarkan rentang tanggal."""
+    if not date_from and not date_to:
+        return entries
+
+    from_key = _date_sort_key(date_from) if date_from else (0, 0, 0)
+    to_key = _date_sort_key(date_to) if date_to else (9999, 99, 99)
+
+    filtered = []
+    for entry in entries:
+        tgl = entry.get("tanggal", "")
+        if tgl:
+            key = _date_sort_key(tgl)
+            if from_key <= key <= to_key:
+                filtered.append(entry)
+    return filtered
+
+
+def run_autofill(driver, data: dict, dry_run: bool = False,
+                 date_from: str = None, date_to: str = None):
     """Jalankan auto-fill untuk semua breakdown."""
     breakdowns = data.get("breakdowns", [])
     if not breakdowns:
@@ -733,6 +763,8 @@ def run_autofill(driver, data: dict, dry_run: bool = False):
     log.info(f"Total entry: {data.get('total_entries', 0)}")
     log.info(f"Jumlah breakdown: {len(breakdowns)}")
     log.info(f"Bulan: {bulan}")
+    if date_from or date_to:
+        log.info(f"Filter tanggal: {date_from or 'awal'} s/d {date_to or 'akhir'}")
     if dry_run:
         log.info("MODE: DRY-RUN (tidak menyimpan)")
 
@@ -740,6 +772,16 @@ def run_autofill(driver, data: dict, dry_run: bool = False):
     total_fail = 0
 
     for bd in breakdowns:
+        # Filter entries berdasarkan tanggal jika ada
+        if date_from or date_to:
+            original_entries = bd["entries"]
+            bd = dict(bd)
+            bd["entries"] = filter_entries_by_date(original_entries, date_from, date_to)
+            if not bd["entries"]:
+                log.info(f"Skip '{bd['kegiatan_tugas_jabatan']}' — tidak ada entry dalam rentang tanggal")
+                continue
+            log.info(f"'{bd['kegiatan_tugas_jabatan']}': {len(bd['entries'])}/{len(original_entries)} entry sesuai filter")
+
         s, f = process_breakdown(driver, bd, bulan, dry_run)
         total_success += s
         total_fail += f
@@ -765,6 +807,8 @@ def main():
     parser.add_argument("--headless", action="store_true", help="Jalankan tanpa tampilan browser")
     parser.add_argument("--dry-run", action="store_true", help="Simulasi tanpa menyimpan")
     parser.add_argument("--skip-login", action="store_true", help="Lewati proses login (jika sudah login)")
+    parser.add_argument("--date-from", help="Tanggal mulai filter (format: DD-MM-YYYY)", default=None)
+    parser.add_argument("--date-to", help="Tanggal akhir filter (format: DD-MM-YYYY)", default=None)
 
     args = parser.parse_args()
 
@@ -803,7 +847,8 @@ def main():
             handle_2fa(driver, bulan=data.get("bulan", "04"))
 
         # Jalankan auto-fill
-        run_autofill(driver, data, dry_run=args.dry_run)
+        run_autofill(driver, data, dry_run=args.dry_run,
+                     date_from=args.date_from, date_to=args.date_to)
 
         log.info("\nBrowser tetap terbuka untuk verifikasi.")
         input("Tekan ENTER untuk menutup browser...")
