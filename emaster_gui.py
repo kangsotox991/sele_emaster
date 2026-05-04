@@ -82,7 +82,7 @@ def convert_excel_to_json(excel_path: str) -> dict:
             if lower_a == "nama" and cell_b:
                 info["nama"] = str(cell_b).strip().lstrip(": ")
             elif lower_a == "nip" and cell_b:
-                info["nip"] = str(cell_b).strip().lstrip(": ")
+                info["nip"] = str(cell_b).strip().lstrip(": ").replace(" ", "")
             elif "unit kerja" in lower_a and cell_b:
                 info["unit_kerja"] = str(cell_b).strip().lstrip(": ")
 
@@ -479,6 +479,7 @@ def safe_set_value(driver, element, value):
 
 def do_login(driver, nip, password):
     from selenium.webdriver.common.by import By
+    nip = nip.replace(" ", "")
     safe_get(driver, LOGIN_URL)
     time.sleep(DELAY_MEDIUM)
 
