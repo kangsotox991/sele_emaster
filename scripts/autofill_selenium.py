@@ -420,6 +420,41 @@ def find_tambah_button(driver):
     return None
 
 
+def get_tambah_url(driver) -> str:
+    """Ambil URL form Tambah dari onclick tombol Tambah.
+
+    Tombol Tambah di e-MASTER berbentuk:
+    <input type="button" value="Tambah"
+           onclick="window.location.href='?module=aktifitas_bulan&act=tambahaktifitas&bulan=04&id_breakdown=...'" />
+
+    Fungsi ini extract URL dari onclick agar bisa navigasi langsung
+    tanpa perlu kembali ke halaman realisasi setiap kali.
+    """
+    import re
+    btn = find_tambah_button(driver)
+    if not btn:
+        return ""
+
+    # Cek onclick attribute
+    onclick = btn.get_attribute("onclick") or ""
+    if onclick:
+        match = re.search(r"(?:window\.location\.href\s*=\s*['\"])([^'\"]+)", onclick)
+        if match:
+            url = match.group(1)
+            if url.startswith("?"):
+                url = BASE_URL + "/essmedia.php" + url
+            elif not url.startswith("http"):
+                url = BASE_URL + "/" + url
+            return url
+
+    # Cek href (untuk <a> elements)
+    href = btn.get_attribute("href") or ""
+    if href and href != "#" and "tambah" in href.lower():
+        return href
+
+    return ""
+
+
 def find_simpan_button(driver):
     """Cari tombol Simpan/Save."""
     for el in driver.find_elements(By.CSS_SELECTOR, "a, button, input[type='button'], input[type='submit']"):
@@ -430,11 +465,21 @@ def find_simpan_button(driver):
 
 
 def _search_and_click_kamus(driver, keyword: str) -> bool:
-    """Cari keyword di popup Kamus yang sudah aktif, lalu klik hasil."""
+    """Cari keyword di popup Kamus yang sudah aktif (window baru), lalu klik hasil.
+
+    Popup Kamus e-MASTER:
+      - Search: <input name="kata" id="kata"> + <input type="submit" value="Cari">
+      - Form GET → halaman reload setelah submit
+      - Hasil: <tr onclick="javascript:pilih(this);"> → klik baris
+      - pilih() → set field di window utama + window.close()
+    """
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    # Cari input pencarian — name="kata", id="kata"
     search_input = None
-    for selector in ["input[type='text']", "input[name*='cari']",
-                     "input[name*='search']", "input[id*='cari']",
-                     "input[id*='search']", "input.text"]:
+    for selector in ["input#kata", "input[name='kata']",
+                     "input[type='text']"]:
         try:
             search_input = driver.find_element(By.CSS_SELECTOR, selector)
             if search_input:
@@ -442,39 +487,45 @@ def _search_and_click_kamus(driver, keyword: str) -> bool:
         except Exception:
             continue
 
-    if search_input:
-        search_input.clear()
-        search_input.send_keys(keyword)
-        log.info(f"    Ketik '{keyword}' di pencarian Kamus")
-        time.sleep(DELAY_SHORT)
-    else:
+    if not search_input:
         log.warning("    Input pencarian Kamus tidak ditemukan")
+        return False
 
-    # Klik tombol "Cari"
-    cari_clicked = False
-    for btn in driver.find_elements(By.CSS_SELECTOR,
-            "input[type='button'], input[type='submit'], button, a"):
-        text = (btn.text or btn.get_attribute("value") or "").strip().lower()
-        if text in ("cari", "search"):
-            btn.click()
-            log.info("    Klik Cari")
+    search_input.clear()
+    search_input.send_keys(keyword)
+    log.info(f"    Ketik '{keyword}' di pencarian Kamus")
+
+    # Submit form (klik Cari atau submit form) — halaman akan reload
+    try:
+        cari_btn = driver.find_element(By.CSS_SELECTOR, "input[type='submit'][value='Cari']")
+        cari_btn.click()
+        log.info("    Klik Cari")
+    except Exception:
+        search_input.submit()
+        log.info("    Submit form pencarian")
+    time.sleep(DELAY_LONG)
+
+    # Klik baris hasil pencarian — <tr onclick="javascript:pilih(this);">
+    rows = driver.find_elements(By.CSS_SELECTOR, "table#sort-table1 tbody tr")
+    if not rows:
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr[onclick]")
+    if not rows:
+        rows = driver.find_elements(By.CSS_SELECTOR, "tbody tr")
+
+    for row in rows:
+        row_text = row.text.strip()
+        if keyword.lower() in row_text.lower():
+            row.click()
+            log.info(f"    Klik hasil Kamus: '{row_text[:60]}'")
             time.sleep(DELAY_MEDIUM)
-            cari_clicked = True
-            break
-    if not cari_clicked:
-        log.warning("    Tombol 'Cari' tidak ditemukan")
+            return True
 
-    # Klik hasil pencarian
-    cells = driver.find_elements(By.CSS_SELECTOR, "td")
-    for cell in cells:
-        text = cell.text.strip()
-        if keyword.lower() in text.lower():
-            links = cell.find_elements(By.CSS_SELECTOR, "a")
-            if links:
-                links[0].click()
-            else:
-                cell.click()
-            log.info(f"    Klik hasil: '{text[:50]}'")
+    # Fallback: klik baris pertama jika ada hasil
+    if rows:
+        first_text = rows[0].text.strip()
+        if first_text:
+            rows[0].click()
+            log.info(f"    Klik hasil pertama: '{first_text[:60]}'")
             time.sleep(DELAY_MEDIUM)
             return True
 
@@ -485,18 +536,22 @@ def _search_and_click_kamus(driver, keyword: str) -> bool:
 def handle_detail_aktivitas_popup(driver, keyword: str, dry_run: bool = False) -> bool:
     """Handle popup Kamus Aktifitas Harian untuk field Detail Aktivitas.
 
-    Mendukung popup sebagai: window baru, iframe, atau modal dialog.
+    Popup buka tab/window baru via open_child('../popup_skp/popup_aktifitas.php',...).
+    Setelah klik baris hasil, fungsi pilih() di popup:
+      - Set field siteh4nk (detail), satuan, wpt di window utama
+      - window.close() → popup tertutup otomatis
 
     Alur:
       1. Klik tombol "..." di samping field Detail Aktivitas
-      2. Popup Kamus terbuka (window baru / iframe / modal)
-      3. Ketik keyword di kotak pencarian
-      4. Klik "Cari"
-      5. Klik hasil pencarian
+      2. Window baru terbuka (popup_aktifitas.php)
+      3. Switch ke window baru
+      4. Ketik keyword di input#kata, klik Cari (form reload)
+      5. Klik baris hasil → pilih() set field + window.close()
+      6. Switch kembali ke window utama
     """
     # Cari tombol "..." (titik 3)
     dot_btn = None
-    for el in driver.find_elements(By.CSS_SELECTOR, "input[type='button'], button, a"):
+    for el in driver.find_elements(By.CSS_SELECTOR, "button, input[type='button'], a"):
         text = (el.text or el.get_attribute("value") or "").strip()
         if text in ("...", "\u2026"):
             dot_btn = el
@@ -518,114 +573,100 @@ def handle_detail_aktivitas_popup(driver, keyword: str, dry_run: bool = False) -
     log.info("    Klik tombol '...' untuk buka Kamus")
     time.sleep(DELAY_LONG)
 
-    # Deteksi jenis popup
+    # Tunggu window baru muncul
     windows_after = set(driver.window_handles)
     new_windows = windows_after - windows_before
-    popup_type = None
 
-    if new_windows:
-        driver.switch_to.window(list(new_windows)[0])
-        popup_type = "window"
-        log.info("    Popup Kamus: window baru")
-    else:
-        # Cek iframe
-        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe")
-        for iframe in iframes:
-            try:
-                src = iframe.get_attribute("src") or ""
-                if "kamus" in src.lower() or iframe.is_displayed():
-                    driver.switch_to.frame(iframe)
-                    popup_type = "iframe"
-                    log.info("    Popup Kamus: iframe")
-                    break
-            except Exception:
-                continue
+    if not new_windows:
+        # Coba tunggu lagi
+        time.sleep(DELAY_MEDIUM)
+        windows_after = set(driver.window_handles)
+        new_windows = windows_after - windows_before
 
-    if not popup_type:
-        # Cek modal dialog
-        modals = driver.find_elements(By.CSS_SELECTOR,
-            "div.modal, div[role='dialog'], div.ui-dialog, div.popup, "
-            "#dialog, #popup, div[style*='display: block']")
-        for modal in modals:
-            try:
-                if modal.is_displayed():
-                    popup_type = "modal"
-                    log.info("    Popup Kamus: modal dialog")
-                    break
-            except Exception:
-                continue
-
-    if not popup_type:
-        log.warning("    Popup Kamus tidak ditemukan (tidak ada window/iframe/modal baru)")
+    if not new_windows:
+        log.warning("    Window popup Kamus tidak terbuka")
         return False
+
+    popup_window = list(new_windows)[0]
+    driver.switch_to.window(popup_window)
+    log.info("    Switch ke window popup Kamus")
+    time.sleep(DELAY_SHORT)
 
     try:
         result = _search_and_click_kamus(driver, keyword)
-
-        # Kembali ke konteks utama
-        if popup_type == "window":
-            try:
-                driver.switch_to.window(main_window)
-            except Exception:
-                pass
-        elif popup_type == "iframe":
-            driver.switch_to.default_content()
-
+        # Setelah klik hasil, pilih() menutup window popup via window.close()
+        # Kembali ke window utama
+        try:
+            driver.switch_to.window(main_window)
+        except Exception:
+            pass
         return result
 
     except Exception as e:
         log.warning(f"    Error di popup Kamus: {e}")
 
-    # Cleanup: kembali ke konteks utama
+    # Cleanup: tutup popup jika masih terbuka, kembali ke window utama
     try:
-        if popup_type == "window":
-            try:
-                driver.close()
-            except Exception:
-                pass
-            driver.switch_to.window(main_window)
-        elif popup_type == "iframe":
-            driver.switch_to.default_content()
+        if popup_window in driver.window_handles:
+            driver.switch_to.window(popup_window)
+            driver.close()
+        driver.switch_to.window(main_window)
     except Exception:
-        pass
+        try:
+            driver.switch_to.window(main_window)
+        except Exception:
+            pass
 
     return False
 
 
-def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
+def fill_single_entry(driver, entry: dict, dry_run: bool = False,
+                      tambah_url: str = "") -> bool:
     """Isi satu entry aktivitas.
 
     Alur:
-      1. Di halaman realisasi, klik Tambah → navigasi ke halaman form
+      1. Navigasi ke halaman form via tambah_url (atau klik tombol Tambah)
       2. Isi field pada form "Tambah Aktivitas":
          - Tanggal Aktivitas (dari Excel)
          - Detail Aktivitas (via popup Kamus → cari "Manajemen Asuhan Keperawatan")
          - Satuan & WPT (otomatis dari Kamus, tidak perlu diisi)
          - Volume (dari Excel)
          - Objek Kerja / Topik (dari Excel)
-      3. Klik Save → kembali ke halaman realisasi
+      3. Klik Save
     """
     log.info(f"  Mengisi: tgl={entry.get('tanggal')}, objek={entry.get('objek_kerja', '')[:40]}...")
 
     dismiss_alert(driver)
 
-    # Klik Tambah — navigasi ke halaman form
-    tambah = find_tambah_button(driver)
-    if tambah:
-        if not dry_run:
-            tambah.click()
-        log.info("  Klik Tambah")
+    # Navigasi ke halaman form Tambah Aktivitas
+    if tambah_url and not dry_run:
+        log.info(f"  Navigasi langsung ke form Tambah")
+        safe_get(driver, tambah_url)
         time.sleep(DELAY_LONG)
     else:
-        log.warning("  Tombol Tambah tidak ditemukan")
-        return False
+        tambah = find_tambah_button(driver)
+        if tambah:
+            if not dry_run:
+                tambah.click()
+            log.info("  Klik Tambah")
+            time.sleep(DELAY_LONG)
+        else:
+            log.warning("  Tombol Tambah tidak ditemukan")
+            return False
 
     filled = 0
 
-    # 1. Isi Tanggal Aktivitas
+    # 1. Isi Tanggal Aktivitas — name="tgl_kegiatan", id="datepicker"
     tanggal = entry.get("tanggal", "")
     if tanggal:
-        el = find_by_labels(driver, ["tanggal aktivitas", "tanggal"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "tgl_kegiatan")
+        except Exception:
+            try:
+                el = driver.find_element(By.ID, "datepicker")
+            except Exception:
+                el = find_by_labels(driver, ["tanggal aktivitas", "tanggal"])
         if el:
             if not dry_run:
                 if safe_set_value(driver, el, str(tanggal)):
@@ -636,26 +677,41 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
                 log.info(f"    [DRY-RUN] tanggal aktivitas: '{tanggal}'")
 
     # 2. Detail Aktivitas — via popup Kamus Aktifitas Harian
-    # Kata kunci diambil dari entry.kamus_keyword (di-set oleh converter)
+    #    Field: name="rk", id="siteh4nk" (readonly, diisi via popup)
+    #    Popup: open_child('../popup_skp/popup_aktifitas.php',...)
     kamus_keyword = entry.get("kamus_keyword") or entry.get("detail_aktivitas", "")
     log.info(f"    Detail Aktivitas keyword: '{kamus_keyword}'")
     if handle_detail_aktivitas_popup(driver, kamus_keyword, dry_run):
         filled += 1
     else:
-        # Fallback: coba isi langsung
+        # Fallback: coba isi langsung via JavaScript (field readonly)
         if kamus_keyword:
-            el = find_by_labels(driver, ["detail aktivitas", "detail"])
-            if el:
-                safe_set_value(driver, el, str(kamus_keyword))
+            try:
+                el = driver.find_element(By.NAME, "rk")
+                if not el:
+                    el = driver.find_element(By.ID, "siteh4nk")
+                driver.execute_script(
+                    "arguments[0].removeAttribute('readonly'); arguments[0].value = arguments[1];",
+                    el, str(kamus_keyword))
                 filled += 1
+                log.info(f"    Detail Aktivitas (fallback JS): '{kamus_keyword}'")
+            except Exception:
+                el = find_by_labels(driver, ["detail aktivitas", "detail"])
+                if el:
+                    safe_set_value(driver, el, str(kamus_keyword))
+                    filled += 1
 
     # 3. Satuan & WPT — otomatis terisi dari Kamus, SKIP
     log.info("    satuan & wpt: otomatis dari Kamus")
 
-    # 4. Isi Volume
+    # 4. Isi Volume — name="volume"
     volume = entry.get("volume", "")
     if volume:
-        el = find_by_labels(driver, ["volume"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "volume")
+        except Exception:
+            el = find_by_labels(driver, ["volume"])
         if el:
             if not dry_run:
                 if safe_set_value(driver, el, str(volume)):
@@ -665,10 +721,14 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
                 filled += 1
                 log.info(f"    [DRY-RUN] volume: '{volume}'")
 
-    # 5. Isi Objek Kerja / Topik
+    # 5. Isi Objek Kerja / Topik — name="objek_kerja"
     objek = entry.get("objek_kerja", "")
     if objek:
-        el = find_by_labels(driver, ["objek kerja", "topik"])
+        el = None
+        try:
+            el = driver.find_element(By.NAME, "objek_kerja")
+        except Exception:
+            el = find_by_labels(driver, ["objek kerja", "topik"])
         if el:
             if not dry_run:
                 if safe_set_value(driver, el, str(objek)):
@@ -678,18 +738,50 @@ def fill_single_entry(driver, entry: dict, dry_run: bool = False) -> bool:
                 filled += 1
                 log.info(f"    [DRY-RUN] objek kerja: '{str(objek)[:60]}'")
 
-    # Klik Save — kembali ke halaman realisasi
+    # Klik Save — ada confirm() dialog yang harus di-accept
     if filled > 0 and not dry_run:
         time.sleep(DELAY_SHORT)
         simpan = find_simpan_button(driver)
         if simpan:
             simpan.click()
             log.info("  Klik Save")
+            # Accept confirm dialog: "Apakah Anda benar-benar mau menyimpan data?"
+            time.sleep(0.5)
+            try:
+                alert = driver.switch_to.alert
+                alert.accept()
+                log.info("  Accept confirm dialog")
+            except Exception:
+                pass
             time.sleep(DELAY_LONG)
         else:
             log.warning("  Tombol Save tidak ditemukan!")
 
     return filled > 0
+
+
+def _navigate_to_realisasi(driver, bulan: str, kegiatan: str, dry_run: bool = False):
+    """Navigasi ke halaman realisasi breakdown tertentu.
+
+    Returns: True jika berhasil, False jika gagal.
+    """
+    aktivitas_url = AKTIVITAS_URL.format(bulan=bulan)
+    safe_get(driver, aktivitas_url)
+    time.sleep(DELAY_LONG)
+
+    link = find_breakdown_link(driver, kegiatan)
+    if link:
+        if not dry_run:
+            link.click()
+        time.sleep(DELAY_LONG)
+        return True
+
+    return False
+
+
+def _is_on_realisasi_page(driver):
+    """Cek apakah masih di halaman realisasi (ada tombol Tambah)."""
+    return find_tambah_button(driver) is not None
 
 
 def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False):
@@ -701,34 +793,29 @@ def process_breakdown(driver, breakdown: dict, bulan: str, dry_run: bool = False
     log.info(f"Jumlah entry: {len(entries)}")
     log.info(f"{'='*60}")
 
-    # Navigasi ke halaman Aktivitas Bulan
-    aktivitas_url = AKTIVITAS_URL.format(bulan=bulan)
-    log.info(f"Membuka halaman aktivitas: {aktivitas_url}")
-    safe_get(driver, aktivitas_url)
-    time.sleep(DELAY_LONG)
-
-    # Cari dan klik link realisasi (icon kunci pas)
-    link = find_breakdown_link(driver, kegiatan)
-    if link:
-        href = link.get_attribute("href") or ""
-        log.info(f"Ditemukan link realisasi: {href[:80]}...")
-        if not dry_run:
-            link.click()
-        else:
-            log.info(f"[DRY-RUN] Akan klik link realisasi untuk '{kegiatan}'")
-        time.sleep(DELAY_LONG)
-    else:
+    # Navigasi pertama ke halaman realisasi
+    if not _navigate_to_realisasi(driver, bulan, kegiatan, dry_run):
         log.error(f"Link realisasi untuk '{kegiatan}' TIDAK DITEMUKAN!")
         log.error("Pastikan nama kegiatan cocok dengan yang ada di e-MASTER.")
         return 0, len(entries)
+
+    log.info(f"Berhasil buka halaman realisasi: {kegiatan[:50]}")
+
+    # Ambil URL form Tambah dari tombol (agar bisa navigasi langsung per entry)
+    tambah_url = get_tambah_url(driver)
+    if tambah_url:
+        log.info(f"Tambah URL: {tambah_url[:80]}...")
+    else:
+        log.warning("Tidak bisa extract Tambah URL, akan pakai klik tombol")
 
     # Isi setiap entry
     success_count = 0
     fail_count = 0
     for i, entry in enumerate(entries):
         log.info(f"\n--- Entry {i+1}/{len(entries)} ---")
+
         try:
-            ok = fill_single_entry(driver, entry, dry_run)
+            ok = fill_single_entry(driver, entry, dry_run, tambah_url=tambah_url)
             if ok:
                 success_count += 1
             else:
