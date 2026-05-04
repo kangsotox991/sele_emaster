@@ -465,11 +465,21 @@ def find_simpan_button(driver):
 
 
 def _search_and_click_kamus(driver, keyword: str) -> bool:
-    """Cari keyword di popup Kamus yang sudah aktif, lalu klik hasil."""
+    """Cari keyword di popup Kamus yang sudah aktif (window baru), lalu klik hasil.
+
+    Popup Kamus e-MASTER:
+      - Search: <input name="kata" id="kata"> + <input type="submit" value="Cari">
+      - Form GET → halaman reload setelah submit
+      - Hasil: <tr onclick="javascript:pilih(this);"> → klik baris
+      - pilih() → set field di window utama + window.close()
+    """
+    from selenium.webdriver.support.ui import WebDriverWait
+    from selenium.webdriver.support import expected_conditions as EC
+
+    # Cari input pencarian — name="kata", id="kata"
     search_input = None
-    for selector in ["input[type='text']", "input[name*='cari']",
-                     "input[name*='search']", "input[id*='cari']",
-                     "input[id*='search']", "input.text"]:
+    for selector in ["input#kata", "input[name='kata']",
+                     "input[type='text']"]:
         try:
             search_input = driver.find_element(By.CSS_SELECTOR, selector)
             if search_input:
@@ -477,39 +487,45 @@ def _search_and_click_kamus(driver, keyword: str) -> bool:
         except Exception:
             continue
 
-    if search_input:
-        search_input.clear()
-        search_input.send_keys(keyword)
-        log.info(f"    Ketik '{keyword}' di pencarian Kamus")
-        time.sleep(DELAY_SHORT)
-    else:
+    if not search_input:
         log.warning("    Input pencarian Kamus tidak ditemukan")
+        return False
 
-    # Klik tombol "Cari"
-    cari_clicked = False
-    for btn in driver.find_elements(By.CSS_SELECTOR,
-            "input[type='button'], input[type='submit'], button, a"):
-        text = (btn.text or btn.get_attribute("value") or "").strip().lower()
-        if text in ("cari", "search"):
-            btn.click()
-            log.info("    Klik Cari")
+    search_input.clear()
+    search_input.send_keys(keyword)
+    log.info(f"    Ketik '{keyword}' di pencarian Kamus")
+
+    # Submit form (klik Cari atau submit form) — halaman akan reload
+    try:
+        cari_btn = driver.find_element(By.CSS_SELECTOR, "input[type='submit'][value='Cari']")
+        cari_btn.click()
+        log.info("    Klik Cari")
+    except Exception:
+        search_input.submit()
+        log.info("    Submit form pencarian")
+    time.sleep(DELAY_LONG)
+
+    # Klik baris hasil pencarian — <tr onclick="javascript:pilih(this);">
+    rows = driver.find_elements(By.CSS_SELECTOR, "table#sort-table1 tbody tr")
+    if not rows:
+        rows = driver.find_elements(By.CSS_SELECTOR, "table tbody tr[onclick]")
+    if not rows:
+        rows = driver.find_elements(By.CSS_SELECTOR, "tbody tr")
+
+    for row in rows:
+        row_text = row.text.strip()
+        if keyword.lower() in row_text.lower():
+            row.click()
+            log.info(f"    Klik hasil Kamus: '{row_text[:60]}'")
             time.sleep(DELAY_MEDIUM)
-            cari_clicked = True
-            break
-    if not cari_clicked:
-        log.warning("    Tombol 'Cari' tidak ditemukan")
+            return True
 
-    # Klik hasil pencarian
-    cells = driver.find_elements(By.CSS_SELECTOR, "td")
-    for cell in cells:
-        text = cell.text.strip()
-        if keyword.lower() in text.lower():
-            links = cell.find_elements(By.CSS_SELECTOR, "a")
-            if links:
-                links[0].click()
-            else:
-                cell.click()
-            log.info(f"    Klik hasil: '{text[:50]}'")
+    # Fallback: klik baris pertama jika ada hasil
+    if rows:
+        first_text = rows[0].text.strip()
+        if first_text:
+            rows[0].click()
+            log.info(f"    Klik hasil pertama: '{first_text[:60]}'")
             time.sleep(DELAY_MEDIUM)
             return True
 
@@ -520,18 +536,22 @@ def _search_and_click_kamus(driver, keyword: str) -> bool:
 def handle_detail_aktivitas_popup(driver, keyword: str, dry_run: bool = False) -> bool:
     """Handle popup Kamus Aktifitas Harian untuk field Detail Aktivitas.
 
-    Mendukung popup sebagai: window baru, iframe, atau modal dialog.
+    Popup buka tab/window baru via open_child('../popup_skp/popup_aktifitas.php',...).
+    Setelah klik baris hasil, fungsi pilih() di popup:
+      - Set field siteh4nk (detail), satuan, wpt di window utama
+      - window.close() → popup tertutup otomatis
 
     Alur:
       1. Klik tombol "..." di samping field Detail Aktivitas
-      2. Popup Kamus terbuka (window baru / iframe / modal)
-      3. Ketik keyword di kotak pencarian
-      4. Klik "Cari"
-      5. Klik hasil pencarian
+      2. Window baru terbuka (popup_aktifitas.php)
+      3. Switch ke window baru
+      4. Ketik keyword di input#kata, klik Cari (form reload)
+      5. Klik baris hasil → pilih() set field + window.close()
+      6. Switch kembali ke window utama
     """
     # Cari tombol "..." (titik 3)
     dot_btn = None
-    for el in driver.find_elements(By.CSS_SELECTOR, "input[type='button'], button, a"):
+    for el in driver.find_elements(By.CSS_SELECTOR, "button, input[type='button'], a"):
         text = (el.text or el.get_attribute("value") or "").strip()
         if text in ("...", "\u2026"):
             dot_btn = el
@@ -553,76 +573,49 @@ def handle_detail_aktivitas_popup(driver, keyword: str, dry_run: bool = False) -
     log.info("    Klik tombol '...' untuk buka Kamus")
     time.sleep(DELAY_LONG)
 
-    # Deteksi jenis popup
+    # Tunggu window baru muncul
     windows_after = set(driver.window_handles)
     new_windows = windows_after - windows_before
-    popup_type = None
 
-    if new_windows:
-        driver.switch_to.window(list(new_windows)[0])
-        popup_type = "window"
-        log.info("    Popup Kamus: window baru")
-    else:
-        # Cek iframe
-        iframes = driver.find_elements(By.CSS_SELECTOR, "iframe")
-        for iframe in iframes:
-            try:
-                src = iframe.get_attribute("src") or ""
-                if "kamus" in src.lower() or iframe.is_displayed():
-                    driver.switch_to.frame(iframe)
-                    popup_type = "iframe"
-                    log.info("    Popup Kamus: iframe")
-                    break
-            except Exception:
-                continue
+    if not new_windows:
+        # Coba tunggu lagi
+        time.sleep(DELAY_MEDIUM)
+        windows_after = set(driver.window_handles)
+        new_windows = windows_after - windows_before
 
-    if not popup_type:
-        # Cek modal dialog
-        modals = driver.find_elements(By.CSS_SELECTOR,
-            "div.modal, div[role='dialog'], div.ui-dialog, div.popup, "
-            "#dialog, #popup, div[style*='display: block']")
-        for modal in modals:
-            try:
-                if modal.is_displayed():
-                    popup_type = "modal"
-                    log.info("    Popup Kamus: modal dialog")
-                    break
-            except Exception:
-                continue
-
-    if not popup_type:
-        log.warning("    Popup Kamus tidak ditemukan (tidak ada window/iframe/modal baru)")
+    if not new_windows:
+        log.warning("    Window popup Kamus tidak terbuka")
         return False
+
+    popup_window = list(new_windows)[0]
+    driver.switch_to.window(popup_window)
+    log.info("    Switch ke window popup Kamus")
+    time.sleep(DELAY_SHORT)
 
     try:
         result = _search_and_click_kamus(driver, keyword)
-
-        # Kembali ke konteks utama
-        if popup_type == "window":
-            try:
-                driver.switch_to.window(main_window)
-            except Exception:
-                pass
-        elif popup_type == "iframe":
-            driver.switch_to.default_content()
-
+        # Setelah klik hasil, pilih() menutup window popup via window.close()
+        # Kembali ke window utama
+        try:
+            driver.switch_to.window(main_window)
+        except Exception:
+            pass
         return result
 
     except Exception as e:
         log.warning(f"    Error di popup Kamus: {e}")
 
-    # Cleanup: kembali ke konteks utama
+    # Cleanup: tutup popup jika masih terbuka, kembali ke window utama
     try:
-        if popup_type == "window":
-            try:
-                driver.close()
-            except Exception:
-                pass
-            driver.switch_to.window(main_window)
-        elif popup_type == "iframe":
-            driver.switch_to.default_content()
+        if popup_window in driver.window_handles:
+            driver.switch_to.window(popup_window)
+            driver.close()
+        driver.switch_to.window(main_window)
     except Exception:
-        pass
+        try:
+            driver.switch_to.window(main_window)
+        except Exception:
+            pass
 
     return False
 
